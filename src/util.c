@@ -164,9 +164,9 @@ int net_init(kernel_pid_t main)
         LOG_ERROR("%s: failed setting TXPOWER (%i)\n", __func__, ret);
     }
     else {
-        LOG_DEBUG("%s: TX-Power: %" PRIi16 "dBm ", __func__, txp);
+        LOG_DEBUG("%s: TX-Power: %" PRIi16 "dBm\n", __func__, txp);
     }
-    
+
     sock_udp_ep_t local;
     memset(&local, 0, sizeof(sock_udp_ep_t));
     local.family = AF_INET6;
