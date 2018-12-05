@@ -36,13 +36,13 @@
 #define ELECT_COAP_PATH_SENSOR  ("/sensor")
 
 static void _resp_handler(unsigned req_state, coap_pkt_t* pdu, sock_udp_ep_t *remote);
-static ssize_t _nodes_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len);
-static ssize_t _sensor_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len);
+static ssize_t _nodes_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len, void *ctx);
+static ssize_t _sensor_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len, void *ctx);
 
 /* CoAP resources */
 static const coap_resource_t _resources[] = {
-    { ELECT_COAP_PATH_NODES,  COAP_PUT,  _nodes_handler },
-    { ELECT_COAP_PATH_SENSOR, COAP_GET,  _sensor_handler },
+    { ELECT_COAP_PATH_NODES,  COAP_PUT,  _nodes_handler, NULL },
+    { ELECT_COAP_PATH_SENSOR, COAP_GET,  _sensor_handler, NULL },
 };
 
 static gcoap_listener_t _listener = {
@@ -72,14 +72,15 @@ static void _resp_handler(unsigned req_state, coap_pkt_t* pdu,
     char *class_str = (coap_get_code_class(pdu) == COAP_CLASS_SUCCESS)
                             ? "Success" : "Error";
     LOG_DEBUG("gcoap: response %s, code %1u.%02u", class_str,
-                                                coap_get_code_class(pdu),
-                                                coap_get_code_detail(pdu));
+                                                   coap_get_code_class(pdu),
+                                                   coap_get_code_detail(pdu));
     if (pdu->payload_len) {
-        if (pdu->content_type == COAP_FORMAT_TEXT) {
+        unsigned content_type = coap_get_content_type(pdu);
+        if (content_type == COAP_FORMAT_TEXT) {
             sensor_msg.content.ptr = pdu->payload;
             msg_send_receive(&sensor_msg, &sensor_msg, main_pid);
         }
-        else if ((pdu->content_type == COAP_FORMAT_LINK) ||
+        else if ((content_type == COAP_FORMAT_LINK) ||
                  (coap_get_code_class(pdu) == COAP_CLASS_CLIENT_FAILURE) ||
                  (coap_get_code_class(pdu) == COAP_CLASS_SERVER_FAILURE)) {
             /* Expecting diagnostic payload in failure cases */
@@ -93,8 +94,10 @@ static void _resp_handler(unsigned req_state, coap_pkt_t* pdu,
     LOG_DEBUG("%s: done\n", __func__);
 }
 
-static ssize_t _nodes_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len)
+static ssize_t _nodes_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len, void *ctx)
 {
+    (void)ctx;
+
     LOG_DEBUG("%s: begin (buflen=%u)\n", __func__, (unsigned)len);
     /* read coap method type in packet */
     unsigned method_flag = coap_method2flag(coap_get_code_detail(pdu));
@@ -116,8 +119,10 @@ static ssize_t _nodes_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len)
     return 0;
 }
 
-static ssize_t _sensor_handler(coap_pkt_t *pdu, uint8_t *buf, size_t len)
+static ssize_t _sensor_handler(coap_pkt_t* pdu, uint8_t *buf, size_t len, void *ctx)
 {
+    (void)ctx;
+
     LOG_DEBUG("%s: begin (buflen=%u)\n", __func__, (unsigned)len);
     msg_t leader_msg = { .type = ELECT_LEADER_ALIVE_EVENT };
     gcoap_resp_init(pdu, buf, len, COAP_CODE_CONTENT);
