@@ -1,6 +1,6 @@
 # vslab-riot
 Scaffold for practical exercise with RIOT, further information on lecture
-[here](http://www.inet.haw-hamburg.de/teaching/ws-2017-18/verteilte-systeme).
+[here](https://www.inet.haw-hamburg.de/teaching/ws-2019-20/verteilte-systeme-1).
 
 ## Introduction
 
