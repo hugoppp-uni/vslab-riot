@@ -34,6 +34,8 @@
 
 #include "elect.h"
 
+const float u = 16;
+
 static msg_t _main_msg_queue[ELECT_NODES_NUM];
 
 /**
@@ -51,6 +53,18 @@ static evtimer_msg_event_t leader_threshold_event = {
     .event  = { .offset = ELECT_LEADER_THRESHOLD },
     .msg    = { .type = ELECT_LEADER_THRESHOLD_EVENT}};
 /** @} */
+
+bool amITheBoss = false;
+bool running = false;
+bool gotNeverMessage = true;
+float sensorValue = 0;
+ipv6_addr_t nodes [ELECT_NODES_NUM];
+ipv6_addr_t latestReceivedIP;//highest ip
+ipv6_addr_t ownIP;
+uint8_t currentNumNodes = 0;
+uint8_t sensorsNumReceived = 0;
+uint8_t interruptCnt = 0;
+uint8_t successfulGets = 0;
 
 /**
  * @brief   Initialise network, coap, and sensor functions
@@ -91,59 +105,160 @@ int setup(void)
     return 0;
 }
 
+void startTimer(uint32_t eventType) {
+    kernel_pid_t main_pid = thread_getpid();
+    uint32_t eventOffset = 0;
+    evtimer_msg_event_t* eventPtr;
+        switch(eventType) {
+        case ELECT_INTERVAL_EVENT:
+            eventPtr = &interval_event;
+            eventOffset = ELECT_MSG_INTERVAL;
+            break;
+        case ELECT_LEADER_THRESHOLD_EVENT:
+            eventPtr = &leader_threshold_event;
+            eventOffset = ELECT_LEADER_THRESHOLD;
+            break;
+        case ELECT_LEADER_TIMEOUT_EVENT:
+            eventPtr = &leader_timeout_event;
+            eventOffset = ELECT_LEADER_TIMEOUT;
+            break;
+        default:
+            printf("### startTimer(): undefined type: <%lu> ###\n", (unsigned long)eventType);
+            return; // DO NOT DELETE the return statement.
+    }
+    evtimer_del(&evtimer, &(eventPtr->event));
+    eventPtr->event.offset = eventOffset;
+    evtimer_add_msg(&evtimer, eventPtr, main_pid);
+}
+
+void reset(void){
+    LOG_DEBUG("Resetting...\n");
+    currentNumNodes = 0;
+    amITheBoss = false;
+    running = false;
+    gotNeverMessage = true;
+    sensorsNumReceived = 0;
+    latestReceivedIP = ownIP;
+    interruptCnt = 0;
+    successfulGets = 0;
+    evtimer_del(&evtimer, &interval_event.event);
+    evtimer_del(&evtimer, &leader_threshold_event.event);
+    evtimer_del(&evtimer, &leader_timeout_event.event);
+    startTimer(ELECT_INTERVAL_EVENT);
+    startTimer(ELECT_LEADER_THRESHOLD_EVENT);
+}
+
 int main(void)
 {
     /* this should be first */
     if (setup() != 0) {
         return 1;
     }
+    get_node_ip_addr(&ownIP);
+    char ip_string[64];
+    ipv6_addr_to_str(ip_string, &ownIP, 64);
+    LOG_DEBUG("own ip: [%s]\n",ip_string);
+
+    reset();
 
     while(true) {
         msg_t m;
         msg_receive(&m);
+
         switch (m.type) {
         case ELECT_INTERVAL_EVENT:
             LOG_DEBUG("+ interval event.\n");
-            /**
-             * @todo implement
-             */
+            if(amITheBoss){
+                sensorValue = (float)sensor_read();
+                for(int i = 0; i<currentNumNodes; i++){
+                    if(coap_get_sensor(nodes[i])){
+                        reset();
+                        break;
+                    }
+                }
+            }else{
+                broadcast_id(&ownIP);
+            }
+            startTimer(ELECT_INTERVAL_EVENT);
             break;
+
         case ELECT_BROADCAST_EVENT:
             LOG_DEBUG("+ broadcast event, from [%s]", (char *)m.content.ptr);
-            /**
-             * @todo implement
-             */
+            if(running){ 
+                reset();
+                LOG_DEBUG("resetted by broadcast\n");
+                break;
+            }
+            ipv6_addr_t addr;
+            char *addr_str = m.content.ptr;
+            ipv6_addr_from_str(&addr, addr_str);
+            if (ipv6_addr_cmp(&ownIP, &addr) < 0) {
+                evtimer_del(&evtimer, &interval_event.event);
+                LOG_DEBUG("Received higher ip\n");
+            }
+            if(gotNeverMessage) {
+                latestReceivedIP = addr;
+                gotNeverMessage = false;
+                startTimer(ELECT_LEADER_THRESHOLD_EVENT);
+            }
+            if((ipv6_addr_cmp(&latestReceivedIP, &addr) != 0) && (ipv6_addr_cmp(&latestReceivedIP, &addr) < 0)) {
+                //other_ip is different from lastRecvIp
+                latestReceivedIP = addr;
+                startTimer(ELECT_LEADER_THRESHOLD_EVENT);
+            }
             break;
+
         case ELECT_LEADER_ALIVE_EVENT:
             LOG_DEBUG("+ leader event.\n");
-            /**
-             * @todo implement
-             */
+            startTimer(ELECT_LEADER_TIMEOUT_EVENT);
             break;
         case ELECT_LEADER_TIMEOUT_EVENT:
             LOG_DEBUG("+ leader timeout event.\n");
-            /**
-             * @todo implement
-             */
+            reset();
             break;
+
         case ELECT_NODES_EVENT:
             LOG_DEBUG("+ nodes event, from [%s].\n", (char *)m.content.ptr);
-            /**
-             * @todo implement
-             */
+            if(currentNumNodes >= ELECT_NODES_NUM){
+                LOG_ERROR("too many nodes received\n");
+                break;
+            }
+            running = true;
+            //check if plausible:
+            //compare own ip with highest, if not highest, something weird is happening
+            amITheBoss = true;
+            ipv6_addr_t ip_addr;
+            char *ip_addr_str = m.content.ptr;
+            ipv6_addr_from_str(&ip_addr, ip_addr_str);
+            nodes[currentNumNodes] = ip_addr;
+            currentNumNodes++;
+            startTimer(ELECT_INTERVAL_EVENT);
             break;
+
         case ELECT_SENSOR_EVENT:
             LOG_DEBUG("+ sensor event, value=%s\n",  (char *)m.content.ptr);
-            /**
-             * @todo implement
-             */
+            if(amITheBoss){
+                sensorsNumReceived++;
+                int16_t value = (int16_t)strtol((char *)m.content.ptr, NULL, 10);
+                sensorValue = ((u-1)/u)*sensorValue+(1/u)*value;
+                if(sensorsNumReceived==currentNumNodes){
+                    broadcast_sensor((uint16_t)sensorValue);
+                    sensorsNumReceived = 0;
+                    sensorValue = 0;
+                }
+            }
             break;
+
         case ELECT_LEADER_THRESHOLD_EVENT:
             LOG_DEBUG("+ leader threshold event.\n");
-            /**
-             * @todo implement
-             */
+            if(ipv6_addr_cmp(&ownIP,&latestReceivedIP)<0){
+                running = true;
+                coap_put_node(latestReceivedIP,ownIP);
+            }else{
+                LOG_WARNING("Leader cannot be alone in channel");
+            }
             break;
+
         default:
             LOG_WARNING("??? invalid event (%x) ???\n", m.type);
             break;
